@@ -14,17 +14,19 @@ except ImportError:
     REACT_PROMPT_TEMPLATE = "Question: {question}\nHistory: {history}\nTools: {tools}"
 
 class ReActEngine:
-    def __init__(self):
+    def __init__(self, tools_inst=None):
         # 基础配置：只关心如何连接大模型
         api_key = os.getenv("LLM_API_KEY")
         base_url = os.getenv("LLM_BASE_URL")
         self.model = os.getenv("LLM_MODEL_ID", "gemini-3-flash-preview-free")
+        self.step_delay_seconds = int(os.getenv("LLM_STEP_DELAY_SECONDS", "60"))
+        self.retry_delay_seconds = int(os.getenv("LLM_429_RETRY_SECONDS", "70"))
         
         if not api_key:
             raise ValueError("❌ 环境变量中未找到 LLM_API_KEY")
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self.executor = ToolExecutor()
+        self.executor = ToolExecutor(tools_inst=tools_inst)
         self.max_steps = 5  # ReAct 推理轮次上限
 
     def _render_prompt(self, formatted_question):
@@ -38,7 +40,10 @@ class ReActEngine:
         render_data = {
             "question": formatted_question,
             "history": "审计开始，正在分析初步线索...",
-            "tools": "- get_user_points[userName]: 【核心工具】查询目标用户的积分/金币流水记录。",
+            "tools": (
+                "- get_user_points[userName]: 【核心工具】查询目标用户的积分/金币流水记录。\n"
+                "- get_audit_history[keyword]: 查询历史审计记录，避免重复判断并补充上下文。"
+            ),
             "gold_threshold": gold_threshold,
             "exp_threshold": exp_threshold,
             "current_date": time.strftime("%Y-%m-%d")
@@ -69,9 +74,9 @@ class ReActEngine:
         for step in range(self.max_steps):
             try:
                 # 🛑 强制降速：免费模型每一步之间必须休息 60 秒，彻底杜绝 429
-                if step > 0:
-                    logging.info(f"💤 API 降速保护：休眠 60 秒后进行第 {step+1} 步思考...")
-                    time.sleep(60)
+                if step > 0 and self.step_delay_seconds > 0:
+                    logging.info(f"💤 API 降速保护：休眠 {self.step_delay_seconds} 秒后进行第 {step+1} 步思考...")
+                    time.sleep(self.step_delay_seconds)
 
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -110,8 +115,8 @@ class ReActEngine:
             except Exception as e:
                 # 针对 429 的最后一道防线
                 if "429" in str(e):
-                    logging.warning("⚠️ 仍然触发了频率限制，深度休眠 70s 后尝试重试...")
-                    time.sleep(70)
+                    logging.warning(f"⚠️ 仍然触发了频率限制，深度休眠 {self.retry_delay_seconds}s 后尝试重试...")
+                    time.sleep(self.retry_delay_seconds)
                     continue 
                 return f"引擎内部故障: {str(e)}"
 

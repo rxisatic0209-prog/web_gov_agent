@@ -4,9 +4,9 @@ import json
 from tools import get_tools_map 
 
 class ToolExecutor:
-    def __init__(self):
+    def __init__(self, tools_inst=None):
         # 将映射存入 _registry，避开关键字 'tools'
-        self._registry = get_tools_map()
+        self._registry = get_tools_map(tools_inst)
         logging.info(f"🛠️ 工具箱初始化完成，已加载: {list(self._registry.keys())}")
 
     def execute(self, tool_name, tool_input):

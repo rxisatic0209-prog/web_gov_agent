@@ -13,7 +13,7 @@ REACT_PROMPT_TEMPLATE = """
 1. 每次回应必须包含 Thought 和 Action 两个部分。
 2. 必须先通过 Thought 拆解疑点，再决定是否 Action。
 3. 如果订单信息已足以断定违规（如明显的手机号重复），可直接 Finish。
-4. 如果信息不足，必须调用 get_user_points 获取证据。
+4. 如果信息不足，优先调用 get_user_points 获取证据；若需要参考既往结论，可调用 get_audit_history。
 
 【回应格式】:
 Thought: 思考过程。

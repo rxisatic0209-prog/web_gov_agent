@@ -6,23 +6,26 @@ import logging
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from memory_store import AuditMemoryStore
 
 load_dotenv()
 
 class AuditTools:
-    def __init__(self):
+    def __init__(self, memory_store=None, eager_login=True):
         self.token = None
         self.order_api = os.getenv("ORDER_API_REAL")
         self.point_api = os.getenv("POINT_API_REAL")
         self.login_url = os.getenv("LOGIN_PAGE_URL")
         self.webhook_url = os.getenv("FEISHU_WEBHOOK")
         self.data_dir = os.path.abspath("./data")
+        self.memory_store = memory_store or AuditMemoryStore()
         
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
             
         # 🚀 启动即检查 Token，确保系统一开始就是活的
-        self._ensure_token()
+        if eager_login:
+            self._ensure_token()
 
     def _ensure_token(self):
         """自动拦截并维护 user-Token"""
@@ -138,9 +141,31 @@ class AuditTools:
         except Exception as e:
             return f"查询失败: {e}"
 
-def get_tools_map():
-    inst = AuditTools()
+    def get_audit_history(self, query_input):
+        """查询历史审计记录，支持买家昵称、订单号、礼品名关键词"""
+        query = str(query_input or "").strip().replace('"', '').replace("'", "")
+        records = self.memory_store.search_records(query=query, limit=5)
+        if not records:
+            return "未找到匹配的历史审计记录。"
+
+        compact_records = []
+        for item in records:
+            compact_records.append({
+                "订单号": item.get("order_id"),
+                "用户标识": item.get("user_id"),
+                "买家": item.get("buyer"),
+                "礼品": item.get("gift_name"),
+                "状态": item.get("status"),
+                "连续异常次数": item.get("abnormal_streak", 0),
+                "审计时间": item.get("audited_at"),
+                "结论": item.get("report", "")[:200]
+            })
+        return json.dumps(compact_records, ensure_ascii=False)
+
+def get_tools_map(inst=None):
+    inst = inst or AuditTools(eager_login=False)
     return {
         "get_latest_orders": inst.get_latest_orders,
-        "get_user_points": inst.get_user_points
+        "get_user_points": inst.get_user_points,
+        "get_audit_history": inst.get_audit_history,
     }
