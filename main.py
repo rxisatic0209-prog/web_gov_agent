@@ -9,8 +9,11 @@ from dotenv import load_dotenv, set_key
 
 from audit_service import AuditService
 from blacklist_service import BlacklistService
+from LLM import LLM
 from memory_store import AuditMemoryStore
 from notifiers import build_notifier
+from ReActEngine import ReActEngine
+from ToolExecutor import ToolExecutor
 
 
 DEFAULT_AUTO_INTERVAL = 24 * 60 * 60
@@ -220,7 +223,17 @@ def main():
             enable_feishu=not args.no_feishu,
             enable_mac=True,
         )
-        service = AuditService(memory_store=memory_store, blacklist_service=blacklist_service, notifier=notifier)
+        llm = LLM()
+        tool_executor = ToolExecutor(memory_store=memory_store, eager_login=False)
+        react_engine = ReActEngine(llm=llm, tool_executor=tool_executor)
+        service = AuditService(
+            llm=llm,
+            tool_executor=tool_executor,
+            engine=react_engine,
+            memory_store=memory_store,
+            blacklist_service=blacklist_service,
+            notifier=notifier,
+        )
 
         results = run_scan(service, size=args.size, notify=True)
         if args.export_csv:

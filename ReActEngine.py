@@ -1,70 +1,58 @@
-import json
 import logging
-import re
 import os
+import re
 import time
-from openai import OpenAI
+
+from LLM import LLM
 from ToolExecutor import ToolExecutor
 
-# 尝试从外部导入模板
-try:
-    from prompt_jifen import REACT_PROMPT_TEMPLATE
-except ImportError:
-    # 兜底模板
-    REACT_PROMPT_TEMPLATE = "Question: {question}\nHistory: {history}\nTools: {tools}"
+from prompt_jifen import REACT_PROMPT_TEMPLATE
 
 class ReActEngine:
-    def __init__(self, tools_inst=None):
-        # 基础配置：只关心如何连接大模型
-        api_key = os.getenv("LLM_API_KEY")
-        base_url = os.getenv("LLM_BASE_URL")
-        self.model = os.getenv("LLM_MODEL_ID", "gemini-3-flash-preview-free")
-        self.step_delay_seconds = int(os.getenv("LLM_STEP_DELAY_SECONDS", "60"))
-        self.retry_delay_seconds = int(os.getenv("LLM_429_RETRY_SECONDS", "70"))
-        
-        if not api_key:
-            raise ValueError("❌ 环境变量中未找到 LLM_API_KEY")
-
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self.executor = ToolExecutor(tools_inst=tools_inst)
-        self.max_steps = 5  # ReAct 推理轮次上限
-
-    def _render_prompt(self, formatted_question):
-        """
-        纯粹的模板渲染逻辑：将外部传来的 question 与环境参数对齐
-        """
-        gold_threshold = os.getenv("GOLD_THRESHOLD", "200")
-        exp_threshold = os.getenv("EXP_THRESHOLD", "150")
-        
-        # 定义模板中所有占位符的对应关系
-        render_data = {
-            "question": formatted_question,
-            "history": "审计开始，正在分析初步线索...",
-            "tools": (
-                "- get_user_points[userName]: 【核心工具】查询目标用户的积分/金币流水记录。\n"
-                "- get_audit_history[keyword]: 查询历史审计记录，避免重复判断并补充上下文。"
-            ),
-            "gold_threshold": gold_threshold,
-            "exp_threshold": exp_threshold,
-            "current_date": time.strftime("%Y-%m-%d")
-        }
-
-        # 自动提取模板里真正存在的变量，避免 KeyError
-        keys = re.findall(r'\{(\w+)\}', REACT_PROMPT_TEMPLATE)
-        final_data = {k: render_data.get(k, f"[{k} Missing]") for k in keys}
-        
-        return REACT_PROMPT_TEMPLATE.format(**final_data)
+    def __init__(
+        self,
+        llm=None,
+        tool_executor=None,
+        max_steps=None,
+        step_delay_seconds=None,
+        retry_delay_seconds=None,
+    ):
+        self.llm = llm or LLM()
+        self.executor = tool_executor or ToolExecutor()
+        self.max_steps = max_steps or 5
+        self.step_delay_seconds = (
+            int(step_delay_seconds)
+            if step_delay_seconds is not None
+            else int(os.getenv("LLM_STEP_DELAY_SECONDS", "60"))
+        )
+        self.retry_delay_seconds = (
+            int(retry_delay_seconds)
+            if retry_delay_seconds is not None
+            else int(os.getenv("LLM_429_RETRY_SECONDS", "70"))
+        )
 
     def run_audit(self, formatted_question):
         """
-        Engine 的核心：只负责对话逻辑和模型调用
+        ReAct 编排层：
+        - 组装消息
+        - 调用 LLM
+        - 解析 Action
+        - 调度工具
         formatted_question: 已经由外部(tools.py/main.py)封装好的文本描述
         """
-        # 1. 渲染最终发送给 AI 的 Prompt
-        prompt = self._render_prompt(formatted_question)
+        prompt = REACT_PROMPT_TEMPLATE.format(
+            question=formatted_question,
+            history="审计开始，正在分析初步线索...",
+            tools=(
+                "- get_user_points[userName]: 【核心工具】查询目标用户的积分/金币流水记录。\n"
+                "- get_audit_history[keyword]: 查询历史审计记录，避免重复判断并补充上下文。"
+            ),
+            gold_threshold=os.getenv("GOLD_THRESHOLD", "200"),
+            exp_threshold=os.getenv("EXP_THRESHOLD", "150"),
+            current_date=time.strftime("%Y-%m-%d"),
+        )
         
         messages = [
-            {"role": "system", "content": "你是一个专业的商城积分审计专家。请严格按照 Thought/Action 格式进行逻辑推理。"},
             {"role": "user", "content": prompt}
         ]
         
@@ -78,13 +66,10 @@ class ReActEngine:
                     logging.info(f"💤 API 降速保护：休眠 {self.step_delay_seconds} 秒后进行第 {step+1} 步思考...")
                     time.sleep(self.step_delay_seconds)
 
-                response = self.client.chat.completions.create(
-                    model=self.model,
+                content = self.llm.think(
                     messages=messages,
-                    temperature=0.1  # 审计任务需要高度确定性，调低温度
+                    temperature=0.1,
                 )
-                
-                content = response.choices[0].message.content
                 print(f"\n--- AI 思考 Step {step+1} ---\n{content}")
 
                 # 检查是否完成

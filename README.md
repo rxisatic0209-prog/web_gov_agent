@@ -1,51 +1,130 @@
 # web_gov_agent
 
-基于 ReAct 的社区治理 Agent。系统会拉取礼品兑换订单，结合用户积分流水做行为审计，输出违规判定，并支持黑名单管理、通知插件和审计结果留存。
+一个基于 ReAct 的积分审计 Agent。
 
-## 功能概览
+系统会拉取商城礼品兑换订单，查询用户积分流水，交给 LLM 做多步审计判断，并把结果写入本地记忆库；当同一用户连续两次出现异常行为时，自动加入黑名单。通知能力通过插件方式挂载，当前支持飞书、控制台和 macOS 本地通知。
 
-- 用户行为评判系统：读取订单和积分流水，结合大模型做违规判定
-- 黑名单系统：支持自动拉黑、手动加入、手动移出、列表查看
-- 通知器插件系统：当前支持飞书、控制台、Mac 通知
-- 记忆系统：持久化保存审计历史、用户状态、黑名单状态
-- 两种巡查模式：手动巡查一次，或用户主动选择自动巡查
-- 最小 UI：基于 Streamlit 的管理台
+## 当前结构
 
-## 项目结构
+项目按下面几层组织：
 
-```text
-.
-├── main.py                 # CLI 入口
-├── app.py                  # Streamlit UI
-├── audit_service.py        # 审计流程编排
-├── behavior_evaluator.py   # 用户行为评判
-├── blacklist_service.py    # 黑名单管理
-├── memory_store.py         # SQLite 记忆存储
-├── notifiers.py            # 通知插件
-├── ReActEngine.py          # ReAct 推理引擎
-├── ToolExecutor.py         # 工具调度
-├── tools.py                # 订单/积分/历史查询工具
-├── prompt_jifen.py         # 审计规则 Prompt
-└── LLM.py                  # 通用 LLM 客户端草稿
-```
+- `LLM.py`
+  LLM 基建层，统一封装 OpenAI 兼容接口调用，对外只暴露 `think()`
+- `prompt_jifen.py`
+  唯一的 ReAct Prompt 模板定义
+- `ToolExecutor.py`
+  工具注册系统和共享工具上下文，负责：
+  - 工具注册与分发
+  - Playwright 登录态维护
+  - `user-Token` 获取与刷新
+  - 工具共享配置和记忆存储入口
+- `tools.py`
+  具体工具实现：
+  - 拉取最新订单
+  - 查询用户积分流水
+  - 查询历史审计记录
+- `memory_store.py`
+  记忆系统，基于 SQLite 持久化保存：
+  - 审计记录
+  - 用户连续异常状态
+  - 黑名单状态
+- `ReActEngine.py`
+  只做多步推理编排：
+  - 渲染 Prompt
+  - 调用 LLM
+  - 解析 `Action`
+  - 调度工具
+- `audit_service.py`
+  审计主流程服务，负责串起：
+  - 扫描订单
+  - 单笔审计
+  - 审计结果归类
+  - 结果写入记忆系统
+  - 调用黑名单系统
+  - 调用通知插件
+- `blacklist_service.py`
+  黑名单规则层，当前规则是同一用户连续 `2` 次异常自动入黑名单
+- `notifiers.py`
+  通知插件系统
+- `main.py`
+  CLI 入口，只负责装配和跑通整个流程
+- `app.py`
+  Streamlit 最小 UI
 
 ## 核心流程
 
-1. 使用 Playwright 复用浏览器登录态，获取业务站点 `user-Token`
-2. 通过订单接口拉取最新兑换订单
-3. 调用积分流水接口查询用户近期行为
-4. 由 ReAct Agent 根据审计规则输出 `合规 / 违规 / 高风险待观察 / 待人工复核`
-5. 更新用户连续异常次数，满足阈值时自动加入黑名单
-6. 写入 SQLite 记忆库，并按配置触发通知器
+```text
+main/app
+  -> AuditService
+    -> ToolExecutor.get_latest_orders
+    -> ReActEngine
+      -> LLM.think
+      -> ToolExecutor.execute
+        -> tools.get_user_points / tools.get_audit_history
+    -> BlacklistService
+    -> AuditMemoryStore
+    -> Notifiers
+```
 
-## 运行环境
+单笔订单的处理逻辑：
 
-- Python 3.11
-- macOS 本地开发环境
-- Playwright
-- OpenAI 兼容接口的大模型服务
+1. 通过订单接口拉取最新订单
+2. `ToolExecutor` 检查当前 `user-Token`
+3. 如果 token 失效，重新走 Playwright 登录态获取
+4. `ReActEngine` 按 Prompt 驱动 LLM 多步推理
+5. LLM 按需调用积分流水工具和历史工具
+6. `audit_service` 将结果归类为：
+   - `合规`
+   - `违规`
+   - `高风险待观察`
+   - `待人工复核`
+7. 记忆系统保存审计结果
+8. 黑名单系统更新用户连续异常次数，必要时自动拉黑
+9. 通知插件发送结果
 
-建议安装依赖：
+## 功能模块
+
+### 1. 用户行为评判系统
+
+当前评判方式是：
+
+- 订单数据作为审计入口
+- 积分流水作为核心证据
+- LLM 做 ReAct 多步判断
+- 代码侧负责结果状态化和后续动作
+
+这层不是纯规则引擎，而是“LLM 审计 + 状态管理”。
+
+### 2. 黑名单系统
+
+当前支持：
+
+- 自动入黑名单
+- 查看黑名单
+- 手动加入黑名单
+- 手动移出黑名单
+
+默认规则：
+
+- 同一用户连续检测 `2` 次异常行为，自动加入黑名单
+
+### 3. 通知器插件系统
+
+当前支持：
+
+- 飞书机器人通知
+- 控制台通知
+- macOS 本地通知
+
+## 运行依赖
+
+建议环境：
+
+- Python 3.11+
+- macOS
+- Playwright Chromium
+
+安装依赖：
 
 ```bash
 pip install openai python-dotenv requests beautifulsoup4 playwright streamlit
@@ -54,7 +133,7 @@ playwright install chromium
 
 ## 环境变量
 
-在 `.env` 中配置：
+在 `.env` 中至少配置这些值：
 
 ```env
 LLM_API_KEY=your_key
@@ -70,14 +149,18 @@ FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
 CHECK_INTERVAL=86400
 GOLD_THRESHOLD=200
 EXP_THRESHOLD=150
+LLM_STEP_DELAY_SECONDS=60
+LLM_429_RETRY_SECONDS=70
+AUDIT_ORDER_DELAY_SECONDS=0
 ```
 
 说明：
 
-- `CHECK_INTERVAL` 只在自动巡查模式下生效
-- 自动巡查不是默认行为，默认是手动巡查一次
+- 默认模式是手动巡查，不会自动常驻
+- `CHECK_INTERVAL` 只在 `--mode auto` 时生效
+- token 失效时，工具系统会自动刷新一次
 
-## CLI 使用
+## CLI 用法
 
 手动巡查一次：
 
@@ -91,23 +174,35 @@ python3 main.py
 python3 main.py --mode auto
 ```
 
+指定扫描数量：
+
+```bash
+python3 main.py --size 30
+```
+
 关闭飞书通知：
 
 ```bash
 python3 main.py --no-feishu
 ```
 
-导出当前巡查结果为 CSV：
+开启控制台通知：
 
 ```bash
-python3 main.py --mode manual --size 30 --no-feishu --export-csv
+python3 main.py --with-console-notifier
 ```
 
-查看历史审计：
+导出人工复核 CSV：
+
+```bash
+python3 main.py --size 30 --export-csv
+```
+
+查询历史审计记录：
 
 ```bash
 python3 main.py --history
-python3 main.py --history Nreal初代用户
+python3 main.py --history 某个买家昵称
 ```
 
 查看黑名单：
@@ -119,7 +214,7 @@ python3 main.py --blacklist
 手动加入黑名单：
 
 ```bash
-python3 main.py --add-blacklist <uid> --blacklist-name <name> --blacklist-reason "manual block"
+python3 main.py --add-blacklist <uid> --blacklist-name <name> --blacklist-reason "手动加入"
 ```
 
 移出黑名单：
@@ -128,30 +223,37 @@ python3 main.py --add-blacklist <uid> --blacklist-name <name> --blacklist-reason
 python3 main.py --remove-blacklist <uid>
 ```
 
-## UI 使用
+## UI 用法
 
-项目提供了一个最小管理台：
+启动 Streamlit：
 
 ```bash
 streamlit run app.py
 ```
 
-UI 包含三个标签页：
+当前 UI 提供三个页签：
 
 - 巡查面板
 - 黑名单管理
 - 历史记录
 
-## 记忆与导出
+UI 只做最小交互，不会在页面里偷偷启动后台常驻任务。自动巡查仍然建议用 CLI 显式启动。
 
-- 审计数据库默认保存在 `data/audit_memory.db`
-- 人工复核 CSV 默认导出到 `data/exports/`
+## 数据存储
 
-## 当前判定方式
+- 审计数据库：`data/audit_memory.db`
+- 人工复核导出：`data/exports/`
+- Playwright 持久化会话：`data/pw_session/`
 
-当前版本采用“大模型审计 + 规则补充”的结构：
+## 当前限制
 
-- 模型负责阅读积分流水、分析高频行为、内容雷同、多账号线索，并生成审计理由
-- 代码负责状态持久化、连续异常计数、自动拉黑和通知分发
+- 判定核心仍然依赖 LLM，不是完全显式规则引擎
+- Prompt 规则目前是写死的，还没有独立规则配置层
+- `main.py` 仍然偏重，后面还可以继续瘦身
+- 还没有 `requirements.txt` / `pyproject.toml`
 
-后续如果要做更稳定的精确率验证，建议进一步加入纯代码规则引擎，把“时间窗口、频次、重复文本、积分阈值”做成可解释的显式规则。
+## 后续适合继续做的事
+
+- 引入显式规则引擎，提升可解释性和精确率稳定性
+- 把配置读取进一步收敛成单独的 settings 层
+- 把 UI 从最小管理台继续扩成完整产品界面

@@ -10,18 +10,18 @@ class BlacklistService:
 
     def apply_evaluation(self, evaluation) -> Dict[str, object]:
         streak = self.memory_store.update_user_state(
-            user_id=evaluation.user_id,
-            user_name=evaluation.buyer,
-            status=evaluation.status,
-            report=evaluation.report,
-            abnormal=evaluation.abnormal,
+            user_id=evaluation["user_id"],
+            user_name=evaluation["buyer"],
+            status=evaluation["status"],
+            report=evaluation["report"],
+            abnormal=evaluation["abnormal"],
         )
 
         auto_blacklisted = False
-        if evaluation.abnormal and streak >= self.threshold and not self.memory_store.is_blacklisted(evaluation.user_id):
+        if evaluation["abnormal"] and streak >= self.threshold and not self.memory_store.is_blacklisted(evaluation["user_id"]):
             self.memory_store.add_to_blacklist(
-                user_id=evaluation.user_id,
-                user_name=evaluation.buyer,
+                user_id=evaluation["user_id"],
+                user_name=evaluation["buyer"],
                 reason=f"连续检测 {streak} 次异常行为",
                 source="system",
             )
@@ -29,7 +29,7 @@ class BlacklistService:
 
         return {
             "abnormal_streak": streak,
-            "is_blacklisted": self.memory_store.is_blacklisted(evaluation.user_id),
+            "is_blacklisted": self.memory_store.is_blacklisted(evaluation["user_id"]),
             "auto_blacklisted": auto_blacklisted,
             "threshold": self.threshold,
         }
